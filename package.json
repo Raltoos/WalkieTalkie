@@ -1,7 +1,11 @@
 {
   "name": "react-walkie-pwa",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -15,6 +19,6 @@
   "devDependencies": {
     "vite": "^5.0.0",
     "@vitejs/plugin-react": "^4.0.0",
-    "vite-plugin-pwa": "^1.2.0"
+    "vite-plugin-pwa": "^1.0.3"
   }
 }

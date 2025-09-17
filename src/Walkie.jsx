@@ -11,7 +11,7 @@ export default function Walkie() {
   const remoteAudioRef = useRef(null);
 
   useEffect(() => {
-    // Create PeerJS client that connects to PeerServer Cloud by default
+    // Create PeerJS client (PeerServer Cloud by default)
     const peer = new Peer();
     peerRef.current = peer;
 
@@ -34,7 +34,7 @@ export default function Walkie() {
 
           incoming.on("close", () => cleanupLocal());
         })
-        .catch((err) => alert("Microphone permission is required"));
+        .catch(() => alert("Microphone permission is required"));
     });
 
     peer.on("error", (err) => console.error("Peer error", err));
