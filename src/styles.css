@@ -83,11 +83,12 @@ body {
   border-radius: 12px;
   border: 1px solid #1f2937;
   background: #0f1620;
-  color: var(--text);
+  color: #000000;
   cursor: pointer;
 }
 .btn.ghost {
   background: transparent;
+  color: #ffffff;
 }
 .btn:active {
   transform: translateY(1px);
@@ -98,7 +99,8 @@ body {
   border-radius: 999px;
   border: 1px solid #1f2937;
   background: #0f1620;
-  color: var(--text);
+  color: #000000;
+  margin-left: 6px;
   cursor: pointer;
 }
 
