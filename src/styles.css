@@ -1,3 +1,4 @@
+/* src/styles.css */
 body {
   font-family: system-ui, Arial, Helvetica, sans-serif;
   margin: 0;
@@ -8,16 +9,50 @@ body {
   max-width: 520px;
   margin: 0 auto;
 }
+
+/* prevent accidental selection while tapping */
+.walkie {
+  user-select: none;
+  -webkit-user-select: none;
+}
+.walkie .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* allow selecting/typing in the input field */
 .walkie input {
   padding: 8px;
   width: 100%;
   max-width: 320px;
+  user-select: text;
+  -webkit-user-select: text;
 }
-.walkie button {
+
+.btn {
   padding: 10px 14px;
-  border-radius: 8px;
+  border-radius: 10px;
   border: 1px solid #ccc;
   background: white;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.btn:active {
+  transform: translateY(1px);
+}
+.btn.sm {
+  padding: 6px 10px;
+}
+.btn.talk.active {
+  background: #0ea5e9;
+  color: white;
+  border-color: #0ea5e9;
+}
+
+.unselectable {
+  user-select: none;
 }
 .note {
   color: #666;
