@@ -1,0 +1,25 @@
+body {
+  font-family: system-ui, Arial, Helvetica, sans-serif;
+  margin: 0;
+  padding: 20px;
+  background: #f7f7f8;
+}
+.app {
+  max-width: 520px;
+  margin: 0 auto;
+}
+.walkie input {
+  padding: 8px;
+  width: 100%;
+  max-width: 320px;
+}
+.walkie button {
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  background: white;
+}
+.note {
+  color: #666;
+  font-size: 14px;
+}
