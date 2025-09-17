@@ -1,221 +1,323 @@
-// src/Walkie.jsx
 import React, { useEffect, useRef, useState } from "react";
 import Peer from "peerjs";
 
-// Helpers
-function makePersistentId() {
-  const k = "walkie-id";
-  let id = localStorage.getItem(k);
-  if (!id) {
-    id = crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
-    localStorage.setItem(k, id);
+const LS_ID = "walkie-peer-id";
+const LS_FRIENDS = "walkie-friends";
+
+function loadFriends() {
+  try {
+    return JSON.parse(localStorage.getItem(LS_FRIENDS) || "[]");
+  } catch {
+    return [];
   }
-  return id;
+}
+function saveFriends(list) {
+  localStorage.setItem(LS_FRIENDS, JSON.stringify(list));
 }
 
 export default function Walkie() {
+  // UI / state
   const [myId, setMyId] = useState("");
   const [remoteId, setRemoteId] = useState("");
+  const [friends, setFriends] = useState(loadFriends());
+  const [friendName, setFriendName] = useState("");
+  const [friendId, setFriendId] = useState("");
+
   const [connected, setConnected] = useState(false);
-  const [transmitting, setTransmitting] = useState(false);
+  const [talking, setTalking] = useState(false); // true => mic track enabled
+
+  // refs
   const peerRef = useRef(null);
   const callRef = useRef(null);
   const localStreamRef = useRef(null);
   const remoteAudioRef = useRef(null);
   const audioCtxRef = useRef(null);
-  const firstGestureDoneRef = useRef(false);
+  const wakeLockRef = useRef(null);
 
-  // Ensure AudioContext is resumed on first user gesture (fixes autoplay issues)
-  function resumeAudio() {
-    if (firstGestureDoneRef.current) return;
-    firstGestureDoneRef.current = true;
+  // ---- Audio helpers ----
+  function userGestureUnlock() {
+    // Resume AudioContext + try play to satisfy autoplay policies
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (Ctx) {
-        const ctx = new Ctx();
-        audioCtxRef.current = ctx;
-        if (ctx.state === "suspended") ctx.resume();
+      if (Ctx && !audioCtxRef.current) {
+        audioCtxRef.current = new Ctx();
       }
-    } catch {
-      /* ignore */
-    }
-    if (remoteAudioRef.current) {
-      remoteAudioRef.current.muted = false;
-      remoteAudioRef.current.play?.().catch(() => {});
-    }
+      if (audioCtxRef.current?.state === "suspended")
+        audioCtxRef.current.resume();
+    } catch {}
+    remoteAudioRef.current?.play?.().catch(() => {});
   }
 
-  // Get/reuse microphone once, instead of every press
-  async function ensureMicStream() {
+  async function ensureMic() {
     if (localStreamRef.current) return localStreamRef.current;
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true },
+    });
+    // default to muted until user toggles on
+    stream.getAudioTracks().forEach((t) => {
+      t.enabled = talking;
     });
     localStreamRef.current = stream;
     return stream;
   }
 
+  // ---- Wake Lock (keep screen on while app is foreground) ----
+  async function requestWakeLock() {
+    try {
+      if ("wakeLock" in navigator && !wakeLockRef.current) {
+        wakeLockRef.current = await navigator.wakeLock.request("screen");
+      }
+    } catch {}
+  }
+  function releaseWakeLock() {
+    try {
+      wakeLockRef.current?.release?.();
+      wakeLockRef.current = null;
+    } catch {}
+  }
+
+  // ---- Peer lifecycle ----
   useEffect(() => {
-    const persistentId = makePersistentId();
-    const createPeer = (id) => new Peer(id);
-    let peer = createPeer(persistentId);
+    let storedId = localStorage.getItem(LS_ID);
+    const peer = storedId ? new Peer(storedId) : new Peer();
     peerRef.current = peer;
 
-    peer.on("open", (id) => setMyId(id));
+    peer.on("open", (id) => {
+      setMyId(id);
+      if (!storedId) localStorage.setItem(LS_ID, id);
+    });
 
-    // If the chosen id is taken (e.g., another install), generate a suffix and retry
-    peer.on("error", (err) => {
-      console.error("Peer error", err);
-      if (err?.type === "unavailable-id") {
-        const newId =
-          persistentId + "-" + Math.random().toString(36).slice(2, 6);
-        localStorage.setItem("walkie-id", newId);
-        peerRef.current?.destroy();
-        peer = new Peer(newId);
-        peerRef.current = peer;
-        peer.on("open", (id) => setMyId(id));
-        attachCallHandlers(peer);
+    peer.on("call", async (incoming) => {
+      // Auto-route voice to whoever connects to me
+      try {
+        userGestureUnlock();
+        const stream = await ensureMic();
+        // if already on a call, end it (single peer only)
+        if (callRef.current && callRef.current !== incoming) {
+          callRef.current.close();
+        }
+        incoming.answer(stream);
+        callRef.current = incoming;
+        setConnected(true);
+        setRemoteId(incoming.peer);
+        // auto-enable mic when someone connects
+        setTalking(true);
+        stream.getAudioTracks().forEach((t) => (t.enabled = true));
+
+        incoming.on("stream", (rs) => {
+          if (remoteAudioRef.current) {
+            remoteAudioRef.current.srcObject = rs;
+            remoteAudioRef.current.play?.().catch(() => {});
+          }
+        });
+        incoming.on("close", endCall);
+        incoming.on("error", endCall);
+      } catch (err) {
+        alert(
+          "Microphone permission is required. Check site settings and reload."
+        );
       }
     });
 
-    function attachCallHandlers(p) {
-      p.on("call", async (incoming) => {
-        resumeAudio();
+    peer.on("disconnected", () => {
+      try {
+        peer.reconnect();
+      } catch {}
+    });
+    peer.on("error", (err) => console.error("Peer error", err));
+
+    // Keep peer alive when tab regains focus
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        userGestureUnlock();
+        requestWakeLock();
         try {
-          const stream = await ensureMicStream();
-          incoming.answer(stream);
-          callRef.current = incoming;
-          setConnected(true);
-
-          incoming.on("stream", (remoteStream) => {
-            if (remoteAudioRef.current) {
-              remoteAudioRef.current.srcObject = remoteStream;
-              remoteAudioRef.current.play?.().catch(() => {});
-            }
-          });
-
-          incoming.on("close", () => endCall());
-          incoming.on("error", () => endCall());
-        } catch (err) {
-          alert("Microphone permission is required");
-        }
-      });
-
-      p.on("disconnected", () => {
-        try {
-          p.reconnect();
-        } catch {
-          /* noop */
-        }
-      });
-    }
-
-    attachCallHandlers(peer);
+          peer.reconnect();
+        } catch {}
+      } else {
+        releaseWakeLock();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
 
     return () => {
+      document.removeEventListener("visibilitychange", onVis);
       peer.destroy();
       endCall();
+      releaseWakeLock();
       audioCtxRef.current?.close?.();
     };
   }, []);
 
   function endCall() {
     setConnected(false);
-    setTransmitting(false);
+    setTalking(false);
     if (callRef.current) callRef.current.close();
     callRef.current = null;
-    // Keep mic stream for quicker re-call; do not stop tracks here.
+    // keep local mic for instant resume; DO NOT stop tracks here
   }
 
-  async function startTalking() {
-    if (!remoteId) return alert("Enter remote ID");
-    resumeAudio();
-    try {
-      const stream = await ensureMicStream();
+  // Start (or reuse) a call to current remoteId
+  async function startOrReuseCall() {
+    if (!remoteId) return alert("Pick a friend or enter an ID");
+    userGestureUnlock();
+    const stream = await ensureMic();
+    if (!callRef.current) {
       const call = peerRef.current.call(remoteId, stream);
       callRef.current = call;
       setConnected(true);
-      setTransmitting(true);
-
-      call.on("stream", (remoteStream) => {
+      call.on("stream", (rs) => {
         if (remoteAudioRef.current) {
-          remoteAudioRef.current.srcObject = remoteStream;
+          remoteAudioRef.current.srcObject = rs;
           remoteAudioRef.current.play?.().catch(() => {});
         }
       });
-
       call.on("close", endCall);
       call.on("error", endCall);
-    } catch (err) {
-      alert("Microphone access required");
     }
+    // enable mic (talk)
+    setTalking(true);
+    stream.getAudioTracks().forEach((t) => (t.enabled = true));
   }
 
-  function toggleTalking() {
-    if (transmitting) {
-      endCall();
-    } else {
-      startTalking();
+  // Toggle talk without dropping the call (mute/unmute mic track)
+  async function toggleTalk() {
+    if (!connected || !callRef.current) {
+      await startOrReuseCall();
+      return;
     }
+    const stream = await ensureMic();
+    const next = !talking;
+    setTalking(next);
+    stream.getAudioTracks().forEach((t) => (t.enabled = next));
   }
 
-  function copyMyId() {
-    navigator.clipboard?.writeText(myId);
+  function hangUp() {
+    endCall();
+  }
+
+  // Friends
+  function addFriend() {
+    if (!friendName.trim() || !friendId.trim()) return;
+    const list = [...friends, { name: friendName.trim(), id: friendId.trim() }];
+    setFriends(list);
+    saveFriends(list);
+    setFriendName("");
+    setFriendId("");
+  }
+  function removeFriend(id) {
+    const list = friends.filter((f) => f.id !== id);
+    setFriends(list);
+    saveFriends(list);
+  }
+  function connectTo(id) {
+    setRemoteId(id);
+    startOrReuseCall();
   }
 
   return (
     <div
       className="walkie"
-      onMouseDown={resumeAudio}
-      onTouchStart={resumeAudio}
+      onMouseDown={userGestureUnlock}
+      onTouchStart={userGestureUnlock}
     >
-      <div className="row">
-        <strong>Your ID:</strong>{" "}
-        <code className="unselectable">{myId || "starting..."}</code>
-        <button className="btn sm" onClick={copyMyId} disabled={!myId}>
+      {/* Header card */}
+      <div className="card header">
+        <div className="idblock">
+          <div className="label">Your ID</div>
+          <div className="id">{myId || "starting..."}</div>
+        </div>
+        <button
+          className="chip"
+          onClick={() => navigator.clipboard?.writeText(myId)}
+          disabled={!myId}
+        >
           Copy
         </button>
       </div>
-      <div style={{ marginTop: 8 }}>
-        <input
-          placeholder="Remote peer ID"
-          value={remoteId}
-          onChange={(e) => setRemoteId(e.target.value)}
-          inputMode="text"
-          autoCapitalize="off"
-          autoCorrect="off"
-        />
+
+      {/* Friend picker */}
+      <div className="card">
+        <div className="row">
+          <input
+            className="input"
+            placeholder="Remote ID"
+            value={remoteId}
+            onChange={(e) => setRemoteId(e.target.value)}
+            autoCapitalize="off"
+            autoCorrect="off"
+          />
+          <button className="btn" onClick={startOrReuseCall}>
+            Connect
+          </button>
+        </div>
+        <div className="subrow">
+          <input
+            className="input"
+            placeholder="Friend name"
+            value={friendName}
+            onChange={(e) => setFriendName(e.target.value)}
+          />
+          <input
+            className="input"
+            placeholder="Friend ID"
+            value={friendId}
+            onChange={(e) => setFriendId(e.target.value)}
+            autoCapitalize="off"
+            autoCorrect="off"
+          />
+          <button className="btn ghost" onClick={addFriend}>
+            Save
+          </button>
+        </div>
+        {friends.length > 0 && (
+          <div className="friends">
+            {friends.map((f) => (
+              <div key={f.id} className="friend">
+                <button className="pill" onClick={() => connectTo(f.id)}>
+                  {f.name}
+                </button>
+                <button
+                  className="x"
+                  title="Remove"
+                  onClick={() => removeFriend(f.id)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-      <div style={{ marginTop: 12 }} className="controls">
+      {/* Big talk controls */}
+      <div className="card center">
+        <div className={`status ${connected ? "on" : "off"}`}>
+          {connected ? "Connected" : "Idle"}
+        </div>
         <button
-          className={`btn talk ${transmitting ? "active" : ""}`}
-          onClick={toggleTalking}
-          onMouseDown={(e) => e.preventDefault()} // avoid selection on long-press
+          className={`talkbtn ${talking ? "live" : ""}`}
+          onClick={toggleTalk}
         >
-          {transmitting
-            ? "Stop talking"
-            : connected
-            ? "Connected — Talk"
-            : "Talk"}
+          {talking ? "Talking" : "Talk"}
         </button>
-        <button
-          className="btn"
-          onClick={() => {
-            peerRef.current?.disconnect();
-            peerRef.current?.reconnect();
-          }}
-        >
-          Reconnect
-        </button>
+        <div className="controls">
+          <button className="btn ghost" onClick={hangUp} disabled={!connected}>
+            Hang up
+          </button>
+          <button
+            className="btn ghost"
+            onClick={() => {
+              peerRef.current?.disconnect();
+              peerRef.current?.reconnect();
+            }}
+          >
+            Reconnect
+          </button>
+        </div>
       </div>
 
       <audio ref={remoteAudioRef} autoPlay playsInline />
-
-      <p style={{ marginTop: 12 }}>
-        IDs persist on this device. Share once with a friend. Tap “Talk” to
-        toggle your mic on/off. Uses PeerJS Cloud and public STUN.
-      </p>
     </div>
   );
 }
